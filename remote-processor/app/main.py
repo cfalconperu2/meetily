@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
 
 from . import jobs, worker
@@ -60,6 +60,7 @@ async def healthz():
 
 @app.post("/v1/jobs", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_api_key)])
 async def create_job(
+    request: Request,
     file: UploadFile = File(...),
     language: Optional[str] = Form(None),
     model: Optional[str] = Form(None),
@@ -72,6 +73,18 @@ async def create_job(
     for that key and hasn't failed, it is returned as-is instead of requeuing
     the audio.
     """
+    # Fast-path reject obviously-oversized uploads using the client-supplied
+    # Content-Length, before touching disk at all. This is a cheap
+    # best-effort guard (a client can omit/lie about the header) -- the
+    # authoritative cap is still enforced below as bytes are streamed in.
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > MAX_UPLOAD_BYTES:
+                raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Audio file exceeds the configured upload limit")
+        except ValueError:
+            pass
+
     if idempotency_key:
         existing = jobs.find_by_idempotency_key(idempotency_key)
         if existing and existing.status != jobs.STATUS_FAILED:
@@ -99,6 +112,8 @@ async def create_job(
     if idempotency_key:
         existing = jobs.find_by_idempotency_key(idempotency_key)
         if existing:
+            if existing.audio_path:
+                shutil.rmtree(Path(existing.audio_path).parent, ignore_errors=True)
             jobs.delete(existing.id)
 
     job = jobs.create(idempotency_key=idempotency_key, language=language, model=model, audio_path=str(audio_path))
