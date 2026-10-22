@@ -717,7 +717,11 @@ async fn create_meeting_with_transcripts(
     .await
     .map_err(|e| anyhow!("Failed to create meeting: {}", e))?;
 
-    // Insert transcripts
+    // Insert transcripts. `speaker` is intentionally left unset (NULL): imported
+    // files are a single already-mixed audio stream, so there's no separate
+    // mic/system signal left to derive a channel label from (see
+    // `ChannelEnergyTracker` in `audio/pipeline.rs`, which only runs on the
+    // live capture path).
     for segment in segments {
         sqlx::query(
             "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration)
@@ -1182,6 +1186,7 @@ mod tests {
                 audio_start_time: Some(0.0),
                 audio_end_time: Some(1.5),
                 duration: Some(1.5),
+                speaker_channel: None,
             },
             TranscriptSegment {
                 id: "t-2".to_string(),
@@ -1190,6 +1195,7 @@ mod tests {
                 audio_start_time: Some(2.0),
                 audio_end_time: Some(3.5),
                 duration: Some(1.5),
+                speaker_channel: None,
             },
         ];
 

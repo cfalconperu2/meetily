@@ -63,12 +63,30 @@ function cleanStopWords(text: string): string {
     return cleanedText.replace(/\s+/g, ' ').trim();
 }
 
+// "Tú" (mic) vs "Otros" (system audio) -- a coarse channel-energy label, not
+// per-person diarization. Omitted entirely when ambiguous/unavailable.
+function SpeakerChannelBadge({ speakerChannel }: { speakerChannel?: string }) {
+    if (speakerChannel !== 'mic' && speakerChannel !== 'system') return null;
+
+    const isMic = speakerChannel === 'mic';
+    return (
+        <span
+            className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0 ${
+                isMic ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-600'
+            }`}
+        >
+            {isMic ? 'Tú' : 'Otros'}
+        </span>
+    );
+}
+
 // Memoized transcript segment component
 const TranscriptSegment = memo(function TranscriptSegment({
     id,
     timestamp,
     text,
     confidence,
+    speakerChannel,
     isStreaming,
     showConfidence,
 }: {
@@ -76,6 +94,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     timestamp: number;
     text: string;
     confidence?: number;
+    speakerChannel?: string;
     isStreaming: boolean;
     showConfidence: boolean;
 }) {
@@ -96,6 +115,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
                         )}
                     </TooltipContent>
                 </Tooltip>
+                <SpeakerChannelBadge speakerChannel={speakerChannel} />
                 <div className="flex-1">
                     {isStreaming ? (
                         <div className="bg-gray-100 border border-gray-200 rounded-lg px-3 py-2">
@@ -257,7 +277,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                         </>
                     ) : (
                         <>
-                            <p className="text-lg font-semibold">Welcome to meetily!</p>
+                            <p className="text-lg font-semibold">Welcome to TBP Meetings!</p>
                             <p className="text-xs mt-1">Start recording to see live transcription</p>
                         </>
                     )}
@@ -294,6 +314,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         timestamp={segment.timestamp}
                                         text={getDisplayText(segment)}
                                         confidence={segment.confidence}
+                                        speakerChannel={segment.speakerChannel}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
                                     />
@@ -350,6 +371,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         timestamp={segment.timestamp}
                                         text={getDisplayText(segment)}
                                         confidence={segment.confidence}
+                                        speakerChannel={segment.speakerChannel}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
                                     />

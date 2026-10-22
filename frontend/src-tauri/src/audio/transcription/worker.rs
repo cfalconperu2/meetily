@@ -42,10 +42,38 @@ pub struct TranscriptUpdate {
     pub audio_start_time: f64, // Seconds from recording start (e.g., 125.3)
     pub audio_end_time: f64,   // Seconds from recording start (e.g., 128.6)
     pub duration: f64,          // Segment duration in seconds (e.g., 3.3)
+    /// Coarse "mic" vs "system" channel label (see `ChannelEnergyTracker` in
+    /// `audio/pipeline.rs`). `None` when ambiguous or not computed.
+    pub speaker_channel: Option<String>,
 }
 
 // NOTE: get_transcript_history and get_recording_meeting_name functions
 // have been moved to recording_commands.rs where they have access to RECORDING_MANAGER
+
+/// "Process on finish" mode: consumes and discards audio chunks without ever
+/// calling into Whisper/Parakeet, so no transcription inference runs during
+/// the meeting (capture and mixing are unaffected — only the per-chunk
+/// inference calls this task would otherwise make are skipped). The channel
+/// is unbounded, so it must still be drained continuously or chunks would
+/// accumulate in memory for the whole meeting. The actual transcript is
+/// produced afterward by a single batch pass over the saved audio file,
+/// reusing the same engine as manual retranscription
+/// (`audio::retranscription::start_retranscription`).
+pub fn start_drain_only_task(
+    mut transcription_receiver: tokio::sync::mpsc::UnboundedReceiver<AudioChunk>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        info!("🚀 Process-on-finish mode: draining audio chunks without live transcription");
+        let mut dropped = 0u64;
+        while transcription_receiver.recv().await.is_some() {
+            dropped += 1;
+        }
+        info!(
+            "Process-on-finish drain task finished ({} chunks discarded, transcription deferred to batch pass)",
+            dropped
+        );
+    })
+}
 
 /// Optimized parallel transcription task ensuring ZERO chunk loss
 pub fn start_transcription_task<R: Runtime>(
@@ -149,6 +177,7 @@ pub fn start_transcription_task<R: Runtime>(
 
                             let chunk_timestamp = chunk.timestamp;
                             let chunk_duration = chunk.data.len() as f64 / chunk.sample_rate as f64;
+                            let chunk_speaker_channel = chunk.speaker_channel.clone();
 
                             // Transcribe with provider-agnostic approach
                             match transcribe_chunk_with_provider(
@@ -215,6 +244,7 @@ pub fn start_transcription_task<R: Runtime>(
                                             audio_start_time,
                                             audio_end_time,
                                             duration: chunk_duration,
+                                            speaker_channel: chunk_speaker_channel,
                                         };
 
                                         if let Err(e) = app_clone.emit("transcript-update", &update)

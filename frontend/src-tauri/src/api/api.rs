@@ -30,6 +30,13 @@ pub struct ApiResponse<T> {
 pub struct Meeting {
     pub id: String,
     pub title: String,
+    pub created_at: String,
+    #[serde(rename = "durationSeconds")]
+    pub duration_seconds: f64,
+    /// Lowercase status of the summary_processes row for this meeting, or null if
+    /// summary generation was never attempted (e.g. "pending", "completed", "failed").
+    #[serde(rename = "summaryStatus")]
+    pub summary_status: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -137,6 +144,8 @@ pub struct MeetingTranscript {
     pub audio_end_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker_channel: Option<String>,
 }
 
 /// Meeting metadata without transcripts (for pagination)
@@ -188,6 +197,8 @@ pub struct TranscriptSegment {
     pub audio_end_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_channel: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -329,8 +340,7 @@ pub async fn api_get_meetings<R: Runtime>(
         auth_token.is_some()
     );
     let pool = state.db_manager.pool();
-    let meetings: Result<Vec<MeetingModel>, sqlx::Error> =
-        MeetingsRepository::get_meetings(pool).await;
+    let meetings = MeetingsRepository::get_meetings_with_status(pool).await;
 
     match meetings {
         Ok(meeting_models) => {
@@ -341,6 +351,9 @@ pub async fn api_get_meetings<R: Runtime>(
                 .map(|m| Meeting {
                     id: m.id,
                     title: m.title,
+                    created_at: m.created_at.0.to_rfc3339(),
+                    duration_seconds: m.duration_seconds,
+                    summary_status: m.summary_status.map(|s| s.to_lowercase()),
                 })
                 .collect();
             Ok(result)
@@ -878,6 +891,7 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
                     audio_start_time: t.audio_start_time,
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
+                    speaker_channel: t.speaker,
                 })
                 .collect::<Vec<_>>();
 

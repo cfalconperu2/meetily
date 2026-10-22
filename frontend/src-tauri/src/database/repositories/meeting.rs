@@ -15,6 +15,31 @@ impl MeetingsRepository {
         Ok(meetings)
     }
 
+    /// Meetings enriched with derived duration (from transcript timestamps) and the
+    /// current summary status, for history-list display and auto-summary resume-on-start.
+    pub async fn get_meetings_with_status(
+        pool: &SqlitePool,
+    ) -> Result<Vec<crate::database::models::MeetingListItem>, sqlx::Error> {
+        sqlx::query_as::<_, crate::database::models::MeetingListItem>(
+            r#"
+            SELECT
+                m.id as id,
+                m.title as title,
+                m.created_at as created_at,
+                m.updated_at as updated_at,
+                COALESCE(MAX(t.audio_end_time), 0.0) as duration_seconds,
+                sp.status as summary_status
+            FROM meetings m
+            LEFT JOIN transcripts t ON t.meeting_id = m.id
+            LEFT JOIN summary_processes sp ON sp.meeting_id = m.id
+            GROUP BY m.id
+            ORDER BY m.created_at DESC
+            "#,
+        )
+        .fetch_all(pool)
+        .await
+    }
+
     pub async fn delete_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<bool, SqlxError> {
         if meeting_id.trim().is_empty() {
             return Err(SqlxError::Protocol(
@@ -92,6 +117,7 @@ impl MeetingsRepository {
                     audio_start_time: t.audio_start_time,
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
+                    speaker_channel: t.speaker,
                 })
                 .collect::<Vec<_>>();
 
