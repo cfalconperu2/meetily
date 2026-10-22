@@ -29,6 +29,80 @@ fn get_custom_templates_dir() -> Option<PathBuf> {
     Some(path)
 }
 
+/// Whether a template id currently resolves to a file in the user's custom
+/// templates directory (as opposed to a bundled or built-in template). Used
+/// to decide whether a template is editable/deletable in the UI.
+pub fn is_custom_template(template_id: &str) -> bool {
+    match get_custom_templates_dir() {
+        Some(dir) => dir.join(format!("{}.json", template_id)).exists(),
+        None => false,
+    }
+}
+
+/// Sanitizes a template id for safe use as a filename: keeps ASCII
+/// letters/digits and replaces everything else (spaces, path separators,
+/// etc.) with `_`. Prevents path traversal via a crafted id.
+pub fn sanitize_template_id(raw_id: &str) -> String {
+    let cleaned: String = raw_id
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    cleaned.trim_matches(|c| c == '_' || c == '-').to_string()
+}
+
+/// Saves a template as JSON into the user's custom templates directory,
+/// creating the directory if needed. Overwrites an existing custom template
+/// with the same id (that's how "edit" works), but never touches bundled or
+/// built-in templates -- those live elsewhere and are never written to.
+pub fn save_custom_template(template_id: &str, template: &Template) -> Result<(), String> {
+    let safe_id = sanitize_template_id(template_id);
+    if safe_id.is_empty() {
+        return Err("Template id cannot be empty".to_string());
+    }
+
+    template.validate()?;
+
+    let dir = get_custom_templates_dir()
+        .ok_or_else(|| "Could not resolve the custom templates directory".to_string())?;
+
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create custom templates directory: {}", e))?;
+
+    let json = serde_json::to_string_pretty(template)
+        .map_err(|e| format!("Failed to serialize template: {}", e))?;
+
+    let path = dir.join(format!("{}.json", safe_id));
+    std::fs::write(&path, json)
+        .map_err(|e| format!("Failed to write template file {:?}: {}", path, e))?;
+
+    info!("Saved custom template '{}' to {:?}", safe_id, path);
+    Ok(())
+}
+
+/// Deletes a custom template. Refuses to delete anything that isn't
+/// currently a file in the custom templates directory -- bundled/built-in
+/// templates can't be "deleted" (only duplicated into a new custom template).
+pub fn delete_custom_template(template_id: &str) -> Result<(), String> {
+    let safe_id = sanitize_template_id(template_id);
+    let dir = get_custom_templates_dir()
+        .ok_or_else(|| "Could not resolve the custom templates directory".to_string())?;
+    let path = dir.join(format!("{}.json", safe_id));
+
+    if !path.exists() {
+        return Err(format!(
+            "'{}' is not a custom template (bundled/built-in templates can't be deleted — duplicate it first)",
+            template_id
+        ));
+    }
+
+    std::fs::remove_file(&path)
+        .map_err(|e| format!("Failed to delete template file {:?}: {}", path, e))?;
+
+    info!("Deleted custom template '{}' at {:?}", safe_id, path);
+    Ok(())
+}
+
 /// Load a template from the bundled resources directory
 ///
 /// # Arguments
