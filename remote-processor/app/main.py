@@ -73,17 +73,19 @@ async def create_job(
     for that key and hasn't failed, it is returned as-is instead of requeuing
     the audio.
     """
-    # Fast-path reject obviously-oversized uploads using the client-supplied
-    # Content-Length, before touching disk at all. This is a cheap
-    # best-effort guard (a client can omit/lie about the header) -- the
-    # authoritative cap is still enforced below as bytes are streamed in.
+    # Require Content-Length and reject obviously-oversized uploads before
+    # touching disk at all. A chunked-transfer request with no Content-Length
+    # (or a spoofed small one) is still caught by the authoritative,
+    # size-bounded streaming loop below -- this is the fast path, not the
+    # only enforcement.
     content_length = request.headers.get("content-length")
-    if content_length is not None:
-        try:
-            if int(content_length) > MAX_UPLOAD_BYTES:
-                raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Audio file exceeds the configured upload limit")
-        except ValueError:
-            pass
+    if content_length is None:
+        raise HTTPException(status.HTTP_411_LENGTH_REQUIRED, "Content-Length header is required")
+    try:
+        if int(content_length) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Audio file exceeds the configured upload limit")
+    except ValueError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid Content-Length header")
 
     if idempotency_key:
         existing = jobs.find_by_idempotency_key(idempotency_key)
