@@ -3,6 +3,9 @@
 import { motion } from 'framer-motion';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useEffect, useState } from 'react';
+import { recordingService } from '@/services/recordingService';
+import { CompactAudioLevelMeter } from '@/components/AudioLevelMeter';
+import type { AudioLevelData } from '@/components/DeviceSelection';
 
 interface RecordingStatusBarProps {
   isPaused?: boolean;
@@ -15,6 +18,33 @@ export const RecordingStatusBar: React.FC<RecordingStatusBarProps> = ({ isPaused
 
   // Display state synced from backend
   const [displaySeconds, setDisplaySeconds] = useState(0);
+
+  // Live mic/system levels for the OBS-style meter. This component only
+  // mounts while actively recording, so no extra isRecording gating is
+  // needed here -- mount/unmount is the gate.
+  const [levels, setLevels] = useState<Map<string, AudioLevelData>>(new Map());
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    recordingService.onRecordingAudioLevels(({ levels: incoming }) => {
+      const next = new Map<string, AudioLevelData>();
+      incoming.forEach((l) => next.set(l.device_name, l));
+      setLevels(next);
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   // Sync with backend duration when it changes (handles refresh/navigation)
   useEffect(() => {
@@ -42,6 +72,14 @@ export const RecordingStatusBar: React.FC<RecordingStatusBarProps> = ({ isPaused
       <span className={`text-sm ${isPaused ? 'text-orange-700' : 'text-gray-700'}`}>
         {isPaused ? 'Paused' : 'Recording'} • {formatDuration(displaySeconds)}
       </span>
+      {Array.from(levels.values()).map((level) => (
+        <CompactAudioLevelMeter
+          key={level.device_name}
+          rmsLevel={level.rms_level}
+          peakLevel={level.peak_level}
+          isActive={level.is_active}
+        />
+      ))}
     </motion.div>
   );
 };

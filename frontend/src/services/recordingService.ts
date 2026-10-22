@@ -7,6 +7,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import type { AudioLevelUpdate } from '@/components/DeviceSelection';
 
 export interface RecordingState {
   is_recording: boolean;
@@ -215,6 +216,35 @@ export class RecordingService {
   async onMicUnavailable(callback: () => void): Promise<UnlistenFn> {
     return listen('mic-unavailable', () => {
       callback();
+    });
+  }
+
+  /**
+   * Listen for recording-recovery-unavailable event (checkpoint saver failed
+   * to initialize for this recording -- it will proceed normally but can't be
+   * recovered if interrupted). Fires during start, before isRecording flips.
+   * @param callback - Function to call with the warning payload
+   */
+  async onRecordingRecoveryUnavailable(
+    callback: (payload: { message: string; detail: string }) => void
+  ): Promise<UnlistenFn> {
+    return listen<{ message: string; detail: string }>('recording-recovery-unavailable', (event) => {
+      callback(event.payload);
+    });
+  }
+
+  /**
+   * Listen for recording-audio-levels event (real mic/system RMS/peak,
+   * computed live from the actual recording pipeline, ~every 600ms while
+   * actively recording). Distinct from the pre-recording device-test
+   * "audio-levels" event, which is simulated data.
+   * @param callback - Function to call with each level update
+   */
+  async onRecordingAudioLevels(
+    callback: (payload: AudioLevelUpdate) => void
+  ): Promise<UnlistenFn> {
+    return listen<AudioLevelUpdate>('recording-audio-levels', (event) => {
+      callback(event.payload);
     });
   }
 

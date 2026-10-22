@@ -7,24 +7,9 @@ use anyhow::Result;
 use log::{debug, error, info, warn};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, SampleRate, StreamConfig};
-use serde::Serialize;
 
 use super::audio_processing::audio_to_mono;
-
-#[derive(Debug, Serialize, Clone)]
-pub struct AudioLevelData {
-    pub device_name: String,
-    pub device_type: String, // "input" or "output"
-    pub rms_level: f32,     // RMS level (0.0 to 1.0)
-    pub peak_level: f32,    // Peak level (0.0 to 1.0)
-    pub is_active: bool,    // Whether audio is being detected
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct AudioLevelUpdate {
-    pub timestamp: u64,
-    pub levels: Vec<AudioLevelData>,
-}
+use super::recording_state::{AudioLevelData, AudioLevelUpdate};
 
 pub struct AudioLevelMonitor {
     monitored_devices: Arc<Mutex<Vec<String>>>,

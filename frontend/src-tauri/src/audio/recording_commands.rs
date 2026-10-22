@@ -108,7 +108,7 @@ static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex::new(None);
 
 const TRANSCRIPTION_RUNTIME_START_ERROR_CODE: &str =
     "TRANSCRIPTION_RUNTIME_INITIALIZATION_FAILED";
-const TRANSCRIPTION_RUNTIME_USER_MESSAGE: &str = "Speech recognition could not initialize. Restart Meetily. If the problem continues, repair or reinstall the app.";
+const TRANSCRIPTION_RUNTIME_USER_MESSAGE: &str = "Speech recognition could not initialize. Restart TBP Meetings. If the problem continues, repair or reinstall the app.";
 
 // ============================================================================
 // PUBLIC TYPES
@@ -353,16 +353,16 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     })).map_err(|e| e.to_string())?;
 
     // Load recording preferences to get auto_save AND device preferences
-    let (auto_save, preferred_mic_name, preferred_system_name) =
+    let (auto_save, preferred_mic_name, preferred_system_name, process_on_finish) =
         match super::recording_preferences::load_recording_preferences(&app).await {
             Ok(prefs) => {
-                info!("📋 Loaded recording preferences: auto_save={}, preferred_mic={:?}, preferred_system={:?}",
-                      prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device);
-                (prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device)
+                info!("📋 Loaded recording preferences: auto_save={}, preferred_mic={:?}, preferred_system={:?}, process_on_finish={}",
+                      prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device, prefs.process_on_finish);
+                (prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device, prefs.process_on_finish)
             }
             Err(e) => {
                 warn!("Failed to load recording preferences, using defaults: {}", e);
-                (true, None, None)
+                (true, None, None, false)
             }
         };
 
@@ -409,6 +409,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // Take the device event receiver BEFORE storing manager globally.
     // A background task will process device events (hot-swap) without frontend polling.
     let device_event_receiver = manager.take_device_event_receiver();
+    let recovery_warning = manager.take_recovery_warning();
+    let level_receiver = manager.take_level_receiver();
     let session = manager.get_state().clone();
 
     // Store the manager globally to keep it alive
@@ -422,13 +424,26 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         spawn_device_event_processor(app.clone(), receiver, session);
     }
 
+    if let Some(receiver) = level_receiver {
+        spawn_audio_level_forwarder(app.clone(), receiver);
+    }
+
+    emit_recovery_warning_if_any(&app, recovery_warning);
+
     // Flip recording live + reset per-session flags (speech-detected latch,
     // mic-recovery budget). Shared with the other start path — see helper.
     finalize_recording_start();
     drop(engine_lifecycle_guard);
 
-    // Start optimized parallel transcription task and store handle
-    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
+    // Start the transcription task and store handle. In "process on finish" mode,
+    // skip live inference entirely (audio capture/mixing is unaffected) — chunks
+    // are drained and discarded, and the full meeting is transcribed in one batch
+    // pass right after it's saved (see useRecordingStop.ts's post-save trigger).
+    let task_handle = if process_on_finish {
+        transcription::start_drain_only_task(transcription_receiver)
+    } else {
+        transcription::start_transcription_task(app.clone(), transcription_receiver)
+    };
     {
         let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
         *global_task = Some(task_handle);
@@ -452,6 +467,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
                     display_time: update.timestamp.clone(), // Use wall-clock timestamp for display
                     confidence: update.confidence,
                     sequence_id: update.sequence_id,
+                    speaker_channel: update.speaker_channel.clone(),
                 };
 
                 // Save to recording manager
@@ -559,15 +575,15 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     // Create new recording manager
     let mut manager = RecordingManager::new();
 
-    // Load recording preferences to check auto_save setting
-    let auto_save = match super::recording_preferences::load_recording_preferences(&app).await {
+    // Load recording preferences to check auto_save / process_on_finish settings
+    let (auto_save, process_on_finish) = match super::recording_preferences::load_recording_preferences(&app).await {
         Ok(prefs) => {
-            info!("📋 Loaded recording preferences: auto_save={}", prefs.auto_save);
-            prefs.auto_save
+            info!("📋 Loaded recording preferences: auto_save={}, process_on_finish={}", prefs.auto_save, prefs.process_on_finish);
+            (prefs.auto_save, prefs.process_on_finish)
         }
         Err(e) => {
             warn!("Failed to load recording preferences, defaulting to auto_save=true: {}", e);
-            true // Default to saving if preferences can't be loaded
+            (true, false) // Default to saving if preferences can't be loaded
         }
     };
 
@@ -596,6 +612,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     // Take the device event receiver BEFORE storing manager globally.
     // A background task will process device events (hot-swap) without frontend polling.
     let device_event_receiver = manager.take_device_event_receiver();
+    let recovery_warning = manager.take_recovery_warning();
+    let level_receiver = manager.take_level_receiver();
     let session = manager.get_state().clone();
 
     // Store the manager globally to keep it alive
@@ -609,13 +627,26 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         spawn_device_event_processor(app.clone(), receiver, session);
     }
 
+    if let Some(receiver) = level_receiver {
+        spawn_audio_level_forwarder(app.clone(), receiver);
+    }
+
+    emit_recovery_warning_if_any(&app, recovery_warning);
+
     // Flip recording live + reset per-session flags (speech-detected latch,
     // mic-recovery budget). Shared with the other start path — see helper.
     finalize_recording_start();
     drop(engine_lifecycle_guard);
 
-    // Start optimized parallel transcription task and store handle
-    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
+    // Start the transcription task and store handle. In "process on finish" mode,
+    // skip live inference entirely (audio capture/mixing is unaffected) — chunks
+    // are drained and discarded, and the full meeting is transcribed in one batch
+    // pass right after it's saved (see useRecordingStop.ts's post-save trigger).
+    let task_handle = if process_on_finish {
+        transcription::start_drain_only_task(transcription_receiver)
+    } else {
+        transcription::start_transcription_task(app.clone(), transcription_receiver)
+    };
     {
         let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
         *global_task = Some(task_handle);
@@ -639,6 +670,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
                     display_time: update.timestamp.clone(), // Use wall-clock timestamp for display
                     confidence: update.confidence,
                     sequence_id: update.sequence_id,
+                    speaker_channel: update.speaker_channel.clone(),
                 };
 
                 // Save to recording manager
@@ -1421,6 +1453,44 @@ async fn do_mic_swap(device_name: &str, session: &Arc<super::RecordingState>) ->
 ///
 /// The task stops automatically when the receiver is dropped (recording
 /// ends / monitor stops).
+/// Surfaces a non-fatal "recording won't be recoverable if interrupted"
+/// warning to the frontend. Set when `RecordingSaver::start_accumulation`
+/// failed to initialize the meeting folder / incremental checkpoint saver
+/// (permissions, OneDrive sync lock, antivirus, long paths, etc.) -- recording
+/// itself proceeds normally, but there's nothing to recover from on a crash.
+fn emit_recovery_warning_if_any<R: Runtime>(app: &AppHandle<R>, warning: Option<String>) {
+    if let Some(detail) = warning {
+        warn!("Recording recovery unavailable for this session: {}", detail);
+        let _ = app.emit(
+            "recording-recovery-unavailable",
+            serde_json::json!({
+                "message": "La grabación continuará con normalidad, pero no podrá recuperarse si se interrumpe inesperadamente.",
+                "detail": detail
+            }),
+        );
+    }
+}
+
+/// Forwards real-time per-window mic/system RMS levels -- computed for free
+/// as a side effect of the pipeline's existing mixing loop (`pipeline.rs`'s
+/// `ChannelEnergyTracker` window extraction) -- to the frontend during an
+/// active recording, for the OBS-style live level meter.
+///
+/// Deliberately a separate event name from `"audio-levels"` (which
+/// `simple_level_monitor.rs` uses for fake sine-wave data on the
+/// pre-recording device-test UI) to keep the two systems fully decoupled.
+/// Stops on its own once the pipeline ends and drops its `level_sender`.
+fn spawn_audio_level_forwarder<R: Runtime>(
+    app: AppHandle<R>,
+    mut receiver: tokio::sync::mpsc::UnboundedReceiver<super::AudioLevelUpdate>,
+) {
+    tokio::spawn(async move {
+        while let Some(update) = receiver.recv().await {
+            let _ = app.emit("recording-audio-levels", &update);
+        }
+    });
+}
+
 fn spawn_device_event_processor<R: Runtime>(
     app: AppHandle<R>,
     mut receiver: tokio::sync::mpsc::UnboundedReceiver<DeviceEvent>,
