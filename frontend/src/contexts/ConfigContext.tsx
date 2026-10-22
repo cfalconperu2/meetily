@@ -161,9 +161,11 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   const [isAutoSummary, setisAutoSummary] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('isAutoSummary');
-      return saved !== null ? saved === 'true' : false
+      // Default ON: the app's core promise is stop -> transcript -> summary with
+      // no manual steps, so auto-summary should work out of the box.
+      return saved !== null ? saved === 'true' : true;
     }
-    return false;
+    return true;
   });
 
   // Beta features state (localStorage)

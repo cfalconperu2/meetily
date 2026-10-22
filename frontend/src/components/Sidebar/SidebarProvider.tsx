@@ -4,8 +4,15 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
+import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useConfig } from '@/contexts/ConfigContext';
 import type { SummaryProcessResponse } from '@/types';
+import { fetchAllTranscriptsForMeeting, buildSummaryTranscriptPayload } from '@/lib/summary-transcript-payload';
+import {
+  readMeetingSummaryLanguage,
+  readCachedDetectedSummaryLanguage,
+} from '@/lib/summary-language-preferences';
 
 
 
@@ -16,9 +23,15 @@ interface SidebarItem {
   children?: SidebarItem[];
 }
 
+/** Meeting-level summary lifecycle, derived from the summary_processes row (or its absence). */
+export type MeetingSummaryStatus = 'pending' | 'completed' | 'failed' | 'cancelled' | null;
+
 export interface CurrentMeeting {
   id: string;
   title: string;
+  createdAt?: string;
+  durationSeconds?: number;
+  summaryStatus?: MeetingSummaryStatus;
 }
 
 // Search result type for transcript search
@@ -89,6 +102,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
   // Use recording state from RecordingStateContext (single source of truth)
   const { isRecording } = useRecordingState();
+  const { isAutoSummary, modelConfig, isModelConfigLoading } = useConfig();
 
   const pathname = usePathname();
   const router = useRouter();
@@ -97,10 +111,19 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const fetchMeetings = React.useCallback(async () => {
     if (serverAddress) {
       try {
-        const meetings = await invoke('api_get_meetings') as Array<{ id: string, title: string }>;
-        const transformedMeetings = meetings.map((meeting: any) => ({
+        const meetings = await invoke('api_get_meetings') as Array<{
+          id: string;
+          title: string;
+          created_at?: string;
+          durationSeconds?: number;
+          summaryStatus?: MeetingSummaryStatus;
+        }>;
+        const transformedMeetings: CurrentMeeting[] = meetings.map((meeting) => ({
           id: meeting.id,
-          title: meeting.title
+          title: meeting.title,
+          createdAt: meeting.created_at,
+          durationSeconds: meeting.durationSeconds,
+          summaryStatus: meeting.summaryStatus ?? null,
         }));
         setMeetings(transformedMeetings);
         Analytics.trackBackendConnection(true);
@@ -291,6 +314,76 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     summaryPollsRef.current.forEach(({ timer }) => clearInterval(timer));
     summaryPollsRef.current.clear();
   }, []);
+
+  // Resume interrupted summary jobs after an app restart/crash.
+  //
+  // A meeting's summary_processes row is left in 'pending' status only while a
+  // generation is actively running (see create_or_reset_process /
+  // update_process_completed|failed|cancelled in the Rust summary repository).
+  // If the app is closed or crashes mid-generation, that row survives in SQLite
+  // as an orphaned 'pending' with no in-memory poller left to finish it. On the
+  // next launch we detect those and restart generation for them exactly once,
+  // reusing api_process_transcript's own idempotent compare-and-set so this can
+  // never race into a duplicate summary or a duplicate meeting.
+  const hasResumedPendingSummariesRef = React.useRef(false);
+  useEffect(() => {
+    if (hasResumedPendingSummariesRef.current) return;
+    if (meetings.length === 0) return;
+    if (isModelConfigLoading) return;
+    hasResumedPendingSummariesRef.current = true;
+
+    if (!isAutoSummary) return;
+    if (!modelConfig.provider || !modelConfig.model) return;
+
+    const pendingMeetings = meetings.filter(m => m.summaryStatus === 'pending');
+    if (pendingMeetings.length === 0) return;
+
+    console.log(`[SidebarProvider] Resuming ${pendingMeetings.length} interrupted summary job(s) from a previous session...`);
+
+    pendingMeetings.forEach(async (meeting) => {
+      try {
+        const allTranscripts = await fetchAllTranscriptsForMeeting(meeting.id);
+        if (!allTranscripts.length) return;
+
+        const [pinnedLanguage, cachedLanguage] = await Promise.all([
+          readMeetingSummaryLanguage(meeting.id).catch(() => ({ language: null })),
+          readCachedDetectedSummaryLanguage(meeting.id).catch(() => null),
+        ]);
+        const summaryLanguage = pinnedLanguage.language || cachedLanguage || undefined;
+
+        const { transcriptText } = buildSummaryTranscriptPayload(allTranscripts);
+        const result = await invoke<{ process_id: string }>('api_process_transcript', {
+          text: transcriptText,
+          model: modelConfig.provider,
+          modelName: modelConfig.model,
+          meetingId: meeting.id,
+          chunkSize: 40000,
+          overlap: 1000,
+          customPrompt: '',
+          templateId: undefined,
+          summaryLanguage,
+        });
+
+        toast.info('Reanudando resumen interrumpido...', {
+          description: `"${meeting.title}" quedó pendiente al cerrar la app anteriormente.`,
+        });
+
+        startSummaryPolling(meeting.id, result.process_id, async (pollResult) => {
+          if (pollResult.status === 'completed') {
+            toast.success('Resumen listo', { description: `"${meeting.title}" ya está disponible en el historial.` });
+            await fetchMeetings();
+          } else if (pollResult.status === 'error' || pollResult.status === 'failed') {
+            toast.error('No se pudo generar el resumen', {
+              description: `"${meeting.title}": ${pollResult.error || 'error desconocido'}. La transcripción se conservó; puedes reintentarlo desde la reunión.`,
+            });
+            await fetchMeetings();
+          }
+        });
+      } catch (error) {
+        console.error(`[SidebarProvider] Failed to resume pending summary for meeting ${meeting.id}:`, error);
+      }
+    });
+  }, [meetings, isAutoSummary, isModelConfigLoading, modelConfig.provider, modelConfig.model, startSummaryPolling, fetchMeetings]);
 
 
 

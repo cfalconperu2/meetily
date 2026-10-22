@@ -127,8 +127,8 @@ export function SummaryModelSettings({ refetchTrigger }: SummaryModelSettingsPro
       <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Auto Summary</h3>
-            <p className="text-sm text-gray-600">Auto Generating summary after meeting completion(Stopping)</p>
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Resumen automático</h3>
+            <p className="text-sm text-gray-600">Genera el resumen automáticamente al finalizar la reunión (sin pulsar ningún botón)</p>
           </div>
           <Switch checked={isAutoSummary} onCheckedChange={toggleIsAutoSummary} />
         </div>
