@@ -20,6 +20,19 @@ pub struct RecordingPreferences {
     pub preferred_mic_device: Option<String>,
     #[serde(default)]
     pub preferred_system_device: Option<String>,
+    /// When true, live per-chunk transcription is skipped during recording (the
+    /// audio pipeline still captures and mixes normally — only the Whisper/Parakeet
+    /// inference calls are skipped) and the full recording is transcribed in one
+    /// batch pass, via the same engine used for manual retranscription, right
+    /// after the meeting is saved. Prioritizes capture over live CPU/GPU load.
+    #[serde(default)]
+    pub process_on_finish: bool,
+    /// When true, a background poller checks for known meeting-app processes
+    /// (Zoom, Teams, etc.) and suggests starting a recording when one appears.
+    /// Off by default: process presence isn't the same as an active call, so
+    /// this can produce false positives (see `audio/meeting_detector.rs`).
+    #[serde(default)]
+    pub auto_detect_meetings: bool,
     #[cfg(target_os = "macos")]
     #[serde(default)]
     pub system_audio_backend: Option<String>,
@@ -33,6 +46,8 @@ impl Default for RecordingPreferences {
             file_format: "mp4".to_string(),
             preferred_mic_device: None,
             preferred_system_device: None,
+            process_on_finish: false,
+            auto_detect_meetings: false,
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
         }

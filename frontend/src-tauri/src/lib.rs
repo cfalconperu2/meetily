@@ -569,6 +569,14 @@ pub fn run() {
                 }
             });
 
+            // Opt-in background watcher for known meeting-app processes (Zoom, Teams, etc.).
+            // Runs for the app's full lifetime; it's a no-op per tick unless the user has
+            // enabled `auto_detect_meetings` in recording preferences.
+            let app_for_meeting_detector = _app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                audio::meeting_detector::run_detection_loop(app_for_meeting_detector).await;
+            });
+
             // Trigger system audio permission request on startup (similar to microphone permission)
             // #[cfg(target_os = "macos")]
             // {
