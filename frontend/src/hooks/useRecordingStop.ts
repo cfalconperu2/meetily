@@ -5,8 +5,11 @@ import { toast } from 'sonner';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
+import { useConfig } from '@/contexts/ConfigContext';
 import { storageService } from '@/services/storageService';
 import { transcriptService } from '@/services/transcriptService';
+import { invoke as invokeTauri } from '@tauri-apps/api/core';
+import type { RecordingPreferences } from '@/components/RecordingSettings';
 import Analytics from '@/lib/analytics';
 import {
   applyPinnedSummaryLanguageToMeeting,
@@ -58,6 +61,8 @@ export function useRecordingStop(
     meetingTitle,
     markMeetingAsSaved,
   } = useTranscripts();
+
+  const { transcriptModelConfig, selectedLanguage } = useConfig();
 
   const {
     refetchMeetings,
@@ -265,13 +270,43 @@ export function useRecordingStop(
             throw new Error('No meeting ID received from save operation');
           }
 
+          // "Process on finish": no transcript was produced live for this session
+          // (see recording_preferences.process_on_finish) — kick off the batch
+          // transcription now, reusing the same engine the manual "Retranscribe"
+          // action uses, so record -> transcribe -> summarize still needs no
+          // manual step. Fire-and-forget: the meeting-details page (which the user
+          // is about to be navigated to) listens for 'retranscription-complete' /
+          // 'retranscription-error' and refreshes itself when it lands.
+          try {
+            const recordingPrefs = await invokeTauri<RecordingPreferences>('get_recording_preferences');
+            if (recordingPrefs.process_on_finish && freshTranscripts.length === 0 && folderPath) {
+              toast.info('Transcribiendo la grabación...', {
+                description: 'El audio se transcribirá automáticamente en segundo plano.',
+              });
+              invokeTauri('start_retranscription_command', {
+                meetingId,
+                meetingFolderPath: folderPath,
+                language: selectedLanguage && selectedLanguage !== 'auto' ? selectedLanguage : null,
+                model: transcriptModelConfig.model || null,
+                provider: transcriptModelConfig.provider || null,
+              }).catch((error) => {
+                console.error('Failed to start deferred transcription:', error);
+                toast.error('No se pudo iniciar la transcripción automática', {
+                  description: error instanceof Error ? error.message : String(error),
+                });
+              });
+            }
+          } catch (error) {
+            console.warn('Failed to check process-on-finish preference:', error);
+          }
+
           let shouldDetectSummaryLanguage = false;
           try {
             shouldDetectSummaryLanguage = !(await applyPinnedSummaryLanguageToMeeting(meetingId));
           } catch (error) {
             console.warn('Failed to apply pinned summary language preference for new meeting:', error);
-            toast.warning('Could not apply default summary language', {
-              description: 'The meeting was saved, but the default summary language was not applied.',
+            toast.warning('No se pudo aplicar el idioma de resumen predeterminado', {
+              description: 'La reunión se guardó, pero no se aplicó el idioma de resumen predeterminado.',
             });
           }
 
@@ -283,8 +318,8 @@ export function useRecordingStop(
               );
             } catch (error) {
               console.warn('Failed to detect summary language for new meeting:', error);
-              toast.warning('Could not detect summary language', {
-                description: 'The meeting was saved, but Auto could not detect the summary language.',
+              toast.warning('No se pudo detectar el idioma del resumen', {
+                description: 'La reunión se guardó, pero la detección automática de idioma falló.',
               });
             }
           }
@@ -323,10 +358,10 @@ export function useRecordingStop(
           setStatus(RecordingStatus.COMPLETED);
 
           // Show success toast with navigation option
-          toast.success('Recording saved successfully!', {
-            description: `${freshTranscripts.length} transcript segments saved.`,
+          toast.success('¡Grabación guardada correctamente!', {
+            description: `${freshTranscripts.length} fragmentos de transcripción guardados.`,
             action: {
-              label: 'View Meeting',
+              label: 'Ver reunión',
               onClick: () => {
                 router.push(`/meeting-details?id=${meetingId}`);
                 Analytics.trackButtonClick('view_meeting_from_toast', 'recording_complete');
@@ -398,8 +433,8 @@ export function useRecordingStop(
         } catch (saveError) {
           console.error('Failed to save meeting to database:', saveError);
           setStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
-          toast.error('Failed to save meeting', {
-            description: saveError instanceof Error ? saveError.message : 'Unknown error'
+          toast.error('No se pudo guardar la reunión', {
+            description: saveError instanceof Error ? saveError.message : 'Error desconocido'
           });
           throw saveError;
         }
@@ -435,6 +470,8 @@ export function useRecordingStop(
     meetings,
     setIsMeetingActive,
     router,
+    transcriptModelConfig,
+    selectedLanguage,
   ]);
 
   // Expose handleRecordingStop function to window for Rust callbacks

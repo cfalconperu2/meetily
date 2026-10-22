@@ -300,6 +300,26 @@ impl SummaryService {
         }
     }
 
+    /// Real meeting date (YYYY-MM-DD), passed to the LLM as a fact so
+    /// templates that ask for a date (e.g. `daily_standup`) don't have to
+    /// have the model guess it from the transcript.
+    async fn read_meeting_date(pool: &SqlitePool, meeting_id: &str) -> Option<String> {
+        match MeetingsRepository::get_meeting_metadata(pool, meeting_id).await {
+            Ok(Some(meeting)) => Some(meeting.created_at.0.format("%Y-%m-%d").to_string()),
+            Ok(None) => {
+                warn!("Meeting not found while reading meeting date: {}", meeting_id);
+                None
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to read meeting metadata for meeting date (meeting_id={}): {}",
+                    meeting_id, e
+                );
+                None
+            }
+        }
+    }
+
     fn detect_summary_language_from_text(text: &str) -> Option<String> {
         let transcript_texts = [text.to_string()];
         let detection = detect_summary_language(&transcript_texts);
@@ -543,6 +563,8 @@ impl SummaryService {
             }),
         };
 
+        let meeting_date = Self::read_meeting_date(&pool, &meeting_id).await;
+
         let client = reqwest::Client::new();
         let result = generate_meeting_summary(
             &client,
@@ -564,6 +586,7 @@ impl SummaryService {
             summary_language.as_deref(),
             detected_summary_language.as_deref(),
             cached_english.as_deref(),
+            meeting_date.as_deref(),
         )
         .await;
 

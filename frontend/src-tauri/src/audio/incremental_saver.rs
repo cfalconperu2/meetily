@@ -67,8 +67,15 @@ impl IncrementalAudioSaver {
 
         // Save checkpoint when buffer reaches threshold (30 seconds)
         if total_samples >= self.checkpoint_interval_samples {
-            self.save_checkpoint()?;
+            let result = self.save_checkpoint();
+            // Always clear, even on failure: leaving the buffer un-cleared after a
+            // failed save means every future add_chunk() call also exceeds the
+            // threshold, so this same checkpoint gets re-attempted (re-encoded via
+            // FFmpeg) on literally every incoming chunk for the rest of the
+            // recording, on an ever-growing buffer. Losing one ~30s checkpoint is a
+            // far better failure mode than that.
             self.checkpoint_buffer.clear();
+            result?;
         }
 
         Ok(())
@@ -440,6 +447,7 @@ mod tests {
                 timestamp: i as f64 * 0.5,  // timestamp in seconds
                 chunk_id: i as u64,
                 device_type: DeviceType::Microphone,
+                speaker_channel: None,
             };
             saver.add_chunk(chunk).unwrap();
         }

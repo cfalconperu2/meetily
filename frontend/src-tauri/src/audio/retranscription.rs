@@ -440,6 +440,10 @@ async fn run_retranscription<R: Runtime>(
         .await
         .map_err(|e| anyhow!("Failed to delete existing transcripts: {}", e))?;
 
+    // `speaker` is intentionally left unset (NULL): retranscription re-processes
+    // the already-mixed saved audio file, so there's no separate mic/system
+    // signal left to derive a channel label from (see `ChannelEnergyTracker`
+    // in `audio/pipeline.rs`, which only runs on the live capture path).
     for segment in &segments {
         sqlx::query(
             "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration)

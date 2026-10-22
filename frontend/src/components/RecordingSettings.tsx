@@ -14,6 +14,8 @@ export interface RecordingPreferences {
   file_format: string;
   preferred_mic_device: string | null;
   preferred_system_device: string | null;
+  process_on_finish: boolean;
+  auto_detect_meetings: boolean;
 }
 
 interface RecordingSettingsProps {
@@ -26,7 +28,9 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     auto_save: true,
     file_format: 'mp4',
     preferred_mic_device: null,
-    preferred_system_device: null
+    preferred_system_device: null,
+    process_on_finish: false,
+    auto_detect_meetings: false
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -75,10 +79,40 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   const handleAutoSaveToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, auto_save: enabled };
     setPreferences(newPreferences);
-    await savePreferences(newPreferences);
+    await savePreferences(newPreferences, { title: 'Preferencia guardada' });
 
     // Track auto-save setting change
     await Analytics.track('auto_save_recording_toggled', {
+      enabled: enabled.toString()
+    });
+  };
+
+  const handleProcessOnFinishToggle = async (enabled: boolean) => {
+    const newPreferences = { ...preferences, process_on_finish: enabled };
+    setPreferences(newPreferences);
+    await savePreferences(newPreferences, {
+      title: 'Preferencia guardada',
+      description: enabled
+        ? 'La transcripción se generará al finalizar la grabación, no durante la reunión.'
+        : 'La transcripción volverá a generarse en vivo durante la reunión.',
+    });
+
+    await Analytics.track('process_on_finish_toggled', {
+      enabled: enabled.toString()
+    });
+  };
+
+  const handleAutoDetectMeetingsToggle = async (enabled: boolean) => {
+    const newPreferences = { ...preferences, auto_detect_meetings: enabled };
+    setPreferences(newPreferences);
+    await savePreferences(newPreferences, {
+      title: 'Preferencia guardada',
+      description: enabled
+        ? 'Te avisaremos cuando detectemos que abriste Zoom, Teams u otra app de videollamada.'
+        : 'Ya no se detectarán automáticamente las apps de videollamada.',
+    });
+
+    await Analytics.track('auto_detect_meetings_toggled', {
       enabled: enabled.toString()
     });
   };
@@ -130,18 +164,21 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     }
   };
 
-  const savePreferences = async (prefs: RecordingPreferences) => {
+  const savePreferences = async (prefs: RecordingPreferences, toastMessage?: { title: string; description?: string }) => {
     setSaving(true);
     try {
       await invoke('set_recording_preferences', { preferences: prefs });
       onSave?.(prefs);
 
-      // Show success toast with device details
-      const micDevice = prefs.preferred_mic_device || 'Default';
-      const systemDevice = prefs.preferred_system_device || 'Default';
-      toast.success("Device preferences saved", {
-        description: `Microphone: ${micDevice}, System Audio: ${systemDevice}`
-      });
+      if (toastMessage) {
+        toast.success(toastMessage.title, { description: toastMessage.description });
+      } else {
+        const micDevice = prefs.preferred_mic_device || 'Default';
+        const systemDevice = prefs.preferred_system_device || 'Default';
+        toast.success("Device preferences saved", {
+          description: `Microphone: ${micDevice}, System Audio: ${systemDevice}`
+        });
+      }
     } catch (error) {
       console.error('Failed to save recording preferences:', error);
       toast.error("Failed to save device preferences", {
@@ -221,6 +258,40 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
           </div>
         </div>
       )}
+
+      {/* Process on Finish Toggle */}
+      <div className="flex items-center justify-between p-4 border rounded-lg">
+        <div className="flex-1">
+          <div className="font-medium">Procesar al finalizar</div>
+          <div className="text-sm text-gray-600">
+            Durante la reunión solo se captura el audio (sin transcribir en vivo), lo que prioriza
+            el rendimiento de la grabación. Al detener, la reunión completa se transcribe en un solo
+            paso automático, usando el modelo e idioma configurados en Transcripción.
+          </div>
+        </div>
+        <Switch
+          checked={preferences.process_on_finish}
+          onCheckedChange={handleProcessOnFinishToggle}
+          disabled={saving}
+        />
+      </div>
+
+      {/* Auto-detect Meetings Toggle */}
+      <div className="flex items-center justify-between p-4 border rounded-lg">
+        <div className="flex-1">
+          <div className="font-medium">Detectar reuniones automáticamente</div>
+          <div className="text-sm text-gray-600">
+            Cuando detectemos que abriste Zoom, Teams u otra app de videollamada, te avisaremos
+            con una notificación para que puedas iniciar la grabación con un clic. Nunca graba
+            automáticamente sin tu confirmación.
+          </div>
+        </div>
+        <Switch
+          checked={preferences.auto_detect_meetings}
+          onCheckedChange={handleAutoDetectMeetingsToggle}
+          disabled={saving}
+        />
+      </div>
 
       {/* Recording Notification Toggle */}
       <div className="flex items-center justify-between p-4 border rounded-lg">

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -15,7 +16,7 @@ import {
 import { toast } from 'sonner';
 
 const TRANSCRIPTION_RUNTIME_START_ERROR_CODE = 'TRANSCRIPTION_RUNTIME_INITIALIZATION_FAILED';
-const TRANSCRIPTION_RUNTIME_USER_MESSAGE = 'Speech recognition could not initialize. Restart Meetily. If the problem continues, repair or reinstall the app.';
+const TRANSCRIPTION_RUNTIME_USER_MESSAGE = 'Speech recognition could not initialize. Restart TBP Meetings. If the problem continues, repair or reinstall the app.';
 
 const isTranscriptionRuntimeStartError = (error: unknown) =>
   String(error) === TRANSCRIPTION_RUNTIME_START_ERROR_CODE;
@@ -404,6 +405,43 @@ export function useRecordingStart(
     showModal,
     setStatus,
   ]);
+
+  // Listen for the backend's meeting-app-detection watcher (opt-in via the
+  // "Detectar reuniones automáticamente" preference). This never starts a
+  // recording on its own -- it only suggests one, since process presence
+  // isn't proof of an active call. Clicking the action reuses the same
+  // sidebar-trigger path as the tray/sidebar "start" entry points.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    listen<{ app_name: string }>('meeting-app-detected', (event) => {
+      if (isRecording || isAutoStarting) return;
+
+      toast.info(`${event.payload.app_name} detectado`, {
+        description: '¿Quieres grabar esta reunión?',
+        duration: 15000,
+        action: {
+          label: 'Iniciar grabación',
+          onClick: () => {
+            window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
+            Analytics.trackButtonClick('start_recording', 'meeting_detected_toast');
+          },
+        },
+      });
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [isRecording, isAutoStarting]);
 
   return {
     handleRecordingStart,

@@ -2,22 +2,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Runtime};
 use anyhow::Result;
 use log::{error, info};
-use serde::Serialize;
 
-#[derive(Debug, Serialize, Clone)]
-pub struct AudioLevelData {
-    pub device_name: String,
-    pub device_type: String, // "input" or "output"
-    pub rms_level: f32,     // RMS level (0.0 to 1.0)
-    pub peak_level: f32,    // Peak level (0.0 to 1.0)
-    pub is_active: bool,    // Whether audio is being detected
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct AudioLevelUpdate {
-    pub timestamp: u64,
-    pub levels: Vec<AudioLevelData>,
-}
+use super::recording_state::{AudioLevelData, AudioLevelUpdate};
 
 // Simple global monitoring state
 static IS_MONITORING: AtomicBool = AtomicBool::new(false);

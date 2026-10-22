@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use anyhow::Result;
+use serde::Serialize;
 
 use super::devices::AudioDevice;
 use super::buffer_pool::AudioBufferPool;
@@ -22,6 +23,13 @@ pub struct AudioChunk {
     pub timestamp: f64,
     pub chunk_id: u64,
     pub device_type: DeviceType,
+    /// Which live capture channel dominated this chunk's audio energy, when
+    /// known. Only ever set on VAD-segmented transcription chunks in
+    /// `pipeline.rs` (via `ChannelEnergyTracker`) -- it is a coarse "mic vs
+    /// system" split, not per-person speaker diarization. `None` for
+    /// pre-mix/recording/flush chunks and for anything derived from a
+    /// single already-mixed audio file (import, retranscription).
+    pub speaker_channel: Option<String>,
 }
 
 /// Processed audio chunk (post-VAD) for recording
@@ -31,6 +39,29 @@ pub struct ProcessedAudioChunk {
     pub sample_rate: u32,
     pub timestamp: f64,
     pub device_type: DeviceType,
+}
+
+/// Per-device audio level snapshot (RMS/peak), 0.0-1.0.
+///
+/// Shared shape used by two independent sources: `simple_level_monitor.rs`'s
+/// fake sine-wave generator (pre-recording device-test UI, event
+/// `"audio-levels"`) and the real per-window RMS computed live in
+/// `pipeline.rs`'s mixing loop during an active recording (event
+/// `"recording-audio-levels"`). The two are intentionally decoupled at the
+/// event-name level -- this struct is just the common wire format.
+#[derive(Debug, Clone, Serialize)]
+pub struct AudioLevelData {
+    pub device_name: String,
+    pub device_type: String, // "input" or "output"
+    pub rms_level: f32,      // RMS level (0.0 to 1.0)
+    pub peak_level: f32,     // Peak level (0.0 to 1.0)
+    pub is_active: bool,     // Whether audio is being detected
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AudioLevelUpdate {
+    pub timestamp: u64,
+    pub levels: Vec<AudioLevelData>,
 }
 
 /// Comprehensive error types for audio system

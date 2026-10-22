@@ -35,6 +35,7 @@ pub mod system_detector;
 pub mod system_audio_commands;
 pub mod device_monitor;  // NEW: Device disconnect/reconnect monitoring
 pub mod playback_monitor; // NEW: Playback device detection for BT warnings
+pub mod meeting_detector; // NEW: Opt-in background detection of known meeting apps
 
 // Transcription module (provider abstraction, engine management, worker pool)
 pub mod transcription;
@@ -80,7 +81,7 @@ pub use system_audio_commands::{
 };
 
 // Export new simplified components
-pub use recording_state::{RecordingState, AudioChunk, ProcessedAudioChunk, AudioError, DeviceType as RecordingDeviceType};
+pub use recording_state::{RecordingState, AudioChunk, ProcessedAudioChunk, AudioError, DeviceType as RecordingDeviceType, AudioLevelData, AudioLevelUpdate};
 pub use pipeline::{AudioPipelineManager};
 pub use stream::{AudioStreamManager};
 pub use recording_manager::{RecordingManager};
@@ -92,7 +93,7 @@ pub use recording_preferences::{
     RecordingPreferences, get_default_recordings_folder
 };
 pub use recording_saver::RecordingSaver;
-pub use level_monitor::{AudioLevelMonitor, AudioLevelData, AudioLevelUpdate};
+pub use level_monitor::AudioLevelMonitor;
 pub use buffer_pool::{AudioBufferPool, PooledBuffer};
 pub use post_processor::{PostProcessor, PostProcessRequest, PostProcessResponse};
 pub use hardware_detector::{HardwareProfile, AdaptiveWhisperConfig, PerformanceTier, GpuType};

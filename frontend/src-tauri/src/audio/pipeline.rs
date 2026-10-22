@@ -9,7 +9,7 @@ use super::batch_processor::AudioMetricsBatcher;
 use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
 use super::devices::AudioDevice;
-use super::recording_state::{AudioChunk, AudioError, RecordingState, DeviceType};
+use super::recording_state::{AudioChunk, AudioError, RecordingState, DeviceType, AudioLevelData, AudioLevelUpdate};
 use super::audio_processing::{audio_to_mono, LoudnessNormalizer, NoiseSuppressionProcessor, HighPassFilter};
 use super::vad::{ContinuousVadProcessor};
 
@@ -153,6 +153,98 @@ impl AudioMixerRingBuffer {
         Some((mic_window, sys_window))
     }
 
+}
+
+fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples.iter().map(|&x| x * x).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
+fn peak(samples: &[f32]) -> f32 {
+    samples.iter().fold(0.0f32, |m, &x| m.max(x.abs()))
+}
+
+/// Tracks per-channel (mic vs. system) RMS energy for each mixing window, so
+/// that VAD speech segments emitted downstream can be labeled by which
+/// channel dominated during that time range.
+///
+/// This is NOT speaker diarization: it cannot distinguish two people talking
+/// into the same microphone, or two people on the same system-audio call. It
+/// only answers "was this segment mostly captured by the mic or by system
+/// audio" -- a coarse "You vs. Others" signal that's free to compute from
+/// data the pipeline already has, since `mic_window`/`sys_window` exist
+/// separately right up until `ProfessionalAudioMixer::mix_window()` sums them.
+struct ChannelEnergyTracker {
+    /// (window_start_ms, window_end_ms, mic_rms, sys_rms), oldest first.
+    windows: VecDeque<(f64, f64, f32, f32)>,
+    elapsed_ms: f64,
+    max_history_ms: f64,
+}
+
+impl ChannelEnergyTracker {
+    fn new() -> Self {
+        Self {
+            windows: VecDeque::new(),
+            elapsed_ms: 0.0,
+            max_history_ms: 10_000.0,
+        }
+    }
+
+    /// Record one mixing window's per-channel energy. Must be called once per
+    /// `extract_window()` call, in order, so `elapsed_ms` stays aligned with
+    /// the VAD's own elapsed-time clock over the same mixed audio stream.
+    fn record_window(&mut self, mic_window: &[f32], sys_window: &[f32], sample_rate: u32) {
+        let sample_count = mic_window.len().max(sys_window.len());
+        let duration_ms = (sample_count as f64 / sample_rate as f64) * 1000.0;
+        let start_ms = self.elapsed_ms;
+        let end_ms = start_ms + duration_ms;
+
+        self.windows
+            .push_back((start_ms, end_ms, rms(mic_window), rms(sys_window)));
+        self.elapsed_ms = end_ms;
+
+        while let Some(&(_, w_end, _, _)) = self.windows.front() {
+            if end_ms - w_end > self.max_history_ms {
+                self.windows.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Classify which channel dominated a given `[start_ms, end_ms)` range by
+    /// duration-weighted average energy. Returns `None` when both channels
+    /// contributed comparably (likely cross-talk) or when no windows overlap
+    /// the range -- better to omit the label than guess wrong.
+    fn classify(&self, start_ms: f64, end_ms: f64) -> Option<String> {
+        let mut mic_energy = 0.0f64;
+        let mut sys_energy = 0.0f64;
+
+        for &(w_start, w_end, mic_rms, sys_rms) in &self.windows {
+            if w_end <= start_ms || w_start >= end_ms {
+                continue;
+            }
+            let overlap = (w_end.min(end_ms) - w_start.max(start_ms)).max(0.0);
+            mic_energy += mic_rms as f64 * overlap;
+            sys_energy += sys_rms as f64 * overlap;
+        }
+
+        let total = mic_energy + sys_energy;
+        if total <= 0.0 {
+            return None;
+        }
+
+        let mic_share = mic_energy / total;
+        if mic_share > 0.65 {
+            Some("mic".to_string())
+        } else if mic_share < 0.35 {
+            Some("system".to_string())
+        } else {
+            None
+        }
+    }
 }
 
 /// Simple audio mixer without aggressive ducking
@@ -626,6 +718,7 @@ impl AudioCapture {
             timestamp,
             chunk_id,
             device_type: self.device_type.clone(),
+            speaker_channel: None,
         };
 
         // NOTE: Raw audio is NOT sent to recording saver to prevent echo
@@ -705,8 +798,16 @@ pub struct AudioPipeline {
     // PROFESSIONAL AUDIO MIXING: Ring buffer + RMS-based mixer
     ring_buffer: AudioMixerRingBuffer,
     mixer: ProfessionalAudioMixer,
+    // Per-channel energy history, used to label VAD segments "mic" vs "system"
+    channel_energy: ChannelEnergyTracker,
     // Recording sender for pre-mixed audio
     recording_sender_for_mixed: Option<mpsc::UnboundedSender<AudioChunk>>,
+    // Real device names, used to label live audio-level updates
+    mic_device_name: String,
+    system_device_name: String,
+    // Live per-window mic/system RMS, sent to the frontend while recording
+    // (OBS-style level meter). `None` unless a recording session is active.
+    level_sender: Option<mpsc::UnboundedSender<AudioLevelUpdate>>,
 }
 
 impl AudioPipeline {
@@ -730,7 +831,7 @@ impl AudioPipeline {
 
         // Device kind information can be used for adaptive buffering in the future
         // For now, we log it for monitoring and potential optimization
-        let _ = (mic_device_name, mic_device_kind, system_device_name, system_device_kind);
+        let _ = (mic_device_kind, system_device_kind);
 
         // Create VAD processor. The VAD processor handles 48kHz->16kHz resampling
         // internally.
@@ -784,7 +885,11 @@ impl AudioPipeline {
             // Initialize professional audio mixing
             ring_buffer,
             mixer,
+            channel_energy: ChannelEnergyTracker::new(),
             recording_sender_for_mixed: None,  // Will be set by manager
+            mic_device_name,
+            system_device_name,
+            level_sender: None,  // Will be set by manager
         })
     }
 
@@ -847,6 +952,44 @@ impl AudioPipeline {
                     // STEP 2: Mix audio in fixed windows when both streams have sufficient data
                     while self.ring_buffer.can_mix() {
                         if let Some((mic_window, sys_window)) = self.ring_buffer.extract_window() {
+                            // Track per-channel energy for this window before it's mixed away,
+                            // so VAD segments below can be labeled mic vs. system.
+                            self.channel_energy.record_window(&mic_window, &sys_window, self.sample_rate);
+
+                            // Live level meter (OBS-style): reuses the exact mic_window/sys_window
+                            // already extracted above, computed for free as a side effect of the
+                            // channel-energy tracking -- no second audio capture needed. Runs
+                            // unconditionally, independent of the "process on finish" live-
+                            // transcription toggle, since it never touches the transcription path.
+                            if let Some(ref sender) = self.level_sender {
+                                let mic_rms = rms(&mic_window);
+                                let sys_rms = rms(&sys_window);
+                                let timestamp = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis() as u64;
+                                let update = AudioLevelUpdate {
+                                    timestamp,
+                                    levels: vec![
+                                        AudioLevelData {
+                                            device_name: self.mic_device_name.clone(),
+                                            device_type: "input".to_string(),
+                                            rms_level: mic_rms,
+                                            peak_level: peak(&mic_window),
+                                            is_active: mic_rms > 0.01,
+                                        },
+                                        AudioLevelData {
+                                            device_name: self.system_device_name.clone(),
+                                            device_type: "output".to_string(),
+                                            rms_level: sys_rms,
+                                            peak_level: peak(&sys_window),
+                                            is_active: sys_rms > 0.01,
+                                        },
+                                    ],
+                                };
+                                let _ = sender.send(update);
+                            }
+
                             // Simple mixing without aggressive ducking
                             let mixed_clean = self.mixer.mix_window(&mic_window, &sys_window);
 
@@ -866,12 +1009,18 @@ impl AudioPipeline {
                                             info!("📤 Sending VAD segment: {:.1}ms, {} samples",
                                                   duration_ms, segment.samples.len());
 
+                                            let speaker_channel = self.channel_energy.classify(
+                                                segment.start_timestamp_ms,
+                                                segment.end_timestamp_ms,
+                                            );
+
                                             let transcription_chunk = AudioChunk {
                                                 data: segment.samples,
                                                 sample_rate: 16000,
                                                 timestamp: segment.start_timestamp_ms / 1000.0,
                                                 chunk_id: self.chunk_id_counter,
                                                 device_type: DeviceType::Microphone,  // Mixed audio
+                                                speaker_channel,
                                             };
 
                                             if let Err(e) = self.transcription_sender.send(transcription_chunk) {
@@ -898,6 +1047,7 @@ impl AudioPipeline {
                                     timestamp: chunk.timestamp,
                                     chunk_id: self.chunk_id_counter,
                                     device_type: DeviceType::Microphone,  // Mixed audio
+                                    speaker_channel: None,
                                 };
                                 let _ = sender.send(recording_chunk);
                             }
@@ -936,12 +1086,18 @@ impl AudioPipeline {
                         info!("📤 Sending final VAD segment to Whisper: {:.1}ms duration, {} samples",
                               duration_ms, segment.samples.len());
 
+                        let speaker_channel = self.channel_energy.classify(
+                            segment.start_timestamp_ms,
+                            segment.end_timestamp_ms,
+                        );
+
                         let transcription_chunk = AudioChunk {
                             data: segment.samples,
                             sample_rate: 16000,
                             timestamp: segment.start_timestamp_ms / 1000.0,
                             chunk_id: self.chunk_id_counter,
                             device_type: DeviceType::Microphone,
+                            speaker_channel,
                         };
 
                         if let Err(e) = self.transcription_sender.send(transcription_chunk) {
@@ -991,6 +1147,7 @@ impl AudioPipelineManager {
         mic_device_kind: super::device_detection::InputDeviceKind,
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
+        level_sender: Option<mpsc::UnboundedSender<AudioLevelUpdate>>,
     ) -> Result<()> {
         // Log device information for adaptive buffering
         info!("🎙️ Starting pipeline with device info:");
@@ -1018,6 +1175,7 @@ impl AudioPipelineManager {
         // CRITICAL FIX: Connect recording sender to receive pre-mixed audio
         // This ensures both mic AND system audio are captured in recordings
         pipeline.recording_sender_for_mixed = recording_sender;
+        pipeline.level_sender = level_sender;
 
         let handle = tokio::spawn(async move {
             pipeline.run().await
@@ -1063,6 +1221,7 @@ impl AudioPipelineManager {
                 timestamp: 0.0,
                 chunk_id: u64::MAX, // Special ID to indicate flush
                 device_type: super::recording_state::DeviceType::Microphone,
+                speaker_channel: None,
             };
 
             if let Err(e) = sender.send(flush_chunk) {
@@ -1083,6 +1242,7 @@ impl AudioPipelineManager {
                         timestamp: 0.0,
                         chunk_id: u64::MAX - (i as u64),
                         device_type: super::recording_state::DeviceType::Microphone,
+                        speaker_channel: None,
                     };
                     let _ = sender.send(additional_flush);
                 }

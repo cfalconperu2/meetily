@@ -256,6 +256,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
     let unlistenFailed: (() => void) | undefined;
     let unlistenMicUnavailable: (() => void) | undefined;
     let unlistenExhausted: (() => void) | undefined;
+    let unlistenRecoveryWarning: (() => void) | undefined;
 
     const setup = async () => {
       try {
@@ -312,6 +313,15 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
         });
         if (cancelled) { fnExhausted(); return; }
         unlistenExhausted = fnExhausted;
+
+        const fnRecoveryWarning = await recordingService.onRecordingRecoveryUnavailable(({ message, detail }) => {
+          console.warn('[RecordingStateContext] recording-recovery-unavailable →', detail);
+          // Fires at recording start, before isRecording flips true — same
+          // reasoning as mic-unavailable above, intentionally NOT gated on isRecordingRef.
+          toast.warning(message, { duration: 8000 });
+        });
+        if (cancelled) { fnRecoveryWarning(); return; }
+        unlistenRecoveryWarning = fnRecoveryWarning;
       } catch (e) {
         console.error('[RecordingStateContext] Failed to set up hot-swap listeners:', e);
       }
@@ -325,6 +335,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
       unlistenFailed?.();
       unlistenMicUnavailable?.();
       unlistenExhausted?.();
+      unlistenRecoveryWarning?.();
     };
   }, []);
 

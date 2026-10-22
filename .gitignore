@@ -77,3 +77,8 @@ experiments/
 target/
 
 frontend/src-tauri/binaries/
+# Local Claude Code project settings
+.claude/
+
+# Icon backup created during rebranding, not meant for the repo
+frontend/src-tauri/icons.bak/

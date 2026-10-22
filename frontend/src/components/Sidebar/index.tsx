@@ -85,6 +85,14 @@ const Sidebar: React.FC = () => {
   });
   const [editingTitle, setEditingTitle] = useState<string>('');
 
+  // Map for O(1) lookup of a meeting's derived duration/summary status by id,
+  // used to render the history status badge next to each meeting's title.
+  const meetingStatusById = useMemo(() => {
+    const map = new Map<string, { createdAt?: string; durationSeconds?: number; summaryStatus?: string | null }>();
+    meetings.forEach(m => map.set(m.id, { createdAt: m.createdAt, durationSeconds: m.durationSeconds, summaryStatus: m.summaryStatus ?? null }));
+    return map;
+  }, [meetings]);
+
   // Ensure 'meetings' folder is always expanded
   useEffect(() => {
     if (!expandedFolders.has('meetings')) {
@@ -641,6 +649,42 @@ const Sidebar: React.FC = () => {
                   </div>
                 )}
               </div>
+
+              {isMeetingItem && (() => {
+                const info = meetingStatusById.get(item.id);
+                if (!info) return null;
+                const { createdAt, durationSeconds, summaryStatus } = info;
+                const badge = (() => {
+                  switch (summaryStatus) {
+                    case 'pending':
+                      return { label: 'Generando resumen…', className: 'text-blue-600 bg-blue-50' };
+                    case 'completed':
+                      return { label: 'Lista', className: 'text-green-700 bg-green-50' };
+                    case 'failed':
+                      return { label: 'Error en el resumen', className: 'text-red-600 bg-red-50' };
+                    case 'cancelled':
+                      return { label: 'Resumen cancelado', className: 'text-gray-600 bg-gray-100' };
+                    default:
+                      return { label: 'Sin resumen', className: 'text-gray-500 bg-gray-100' };
+                  }
+                })();
+                const formattedDuration = typeof durationSeconds === 'number' && durationSeconds > 0
+                  ? `${Math.floor(durationSeconds / 60)}:${Math.floor(durationSeconds % 60).toString().padStart(2, '0')}`
+                  : null;
+                const formattedDate = createdAt
+                  ? (() => {
+                      const parsed = new Date(createdAt);
+                      return isNaN(parsed.getTime()) ? null : parsed.toLocaleDateString();
+                    })()
+                  : null;
+                return (
+                  <div className="mt-1 ml-8 flex items-center gap-1.5 text-xs">
+                    <span className={`px-1.5 py-0.5 rounded ${badge.className}`}>{badge.label}</span>
+                    {formattedDate && <span className="text-gray-400">{formattedDate}</span>}
+                    {formattedDuration && <span className="text-gray-400">{formattedDuration}</span>}
+                  </div>
+                );
+              })()}
 
               {/* Show transcript match snippet if available */}
               {hasTranscriptMatch && (

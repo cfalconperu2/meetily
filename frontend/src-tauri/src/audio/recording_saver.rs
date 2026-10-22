@@ -22,6 +22,8 @@ pub struct TranscriptSegment {
     pub display_time: String,   // Formatted time for display like "[02:15]"
     pub confidence: f32,
     pub sequence_id: u64,
+    #[serde(default)]
+    pub speaker_channel: Option<String>,
 }
 
 /// Meeting metadata structure
@@ -127,6 +129,7 @@ impl RecordingSaver {
             display_time: "[00:00]".to_string(),
             confidence: 1.0,
             sequence_id: 0,
+            speaker_channel: None,
         };
         self.add_transcript_segment(segment);
     }
@@ -135,11 +138,17 @@ impl RecordingSaver {
     ///
     /// # Arguments
     /// * `auto_save` - If true, creates checkpoints and enables saving. If false, audio chunks are discarded.
+    ///
+    /// # Returns
+    /// `Some(detail)` if the meeting folder / incremental checkpoint saver failed
+    /// to initialize (recording still proceeds, but it won't be recoverable if
+    /// interrupted) -- the caller is responsible for surfacing this to the user,
+    /// since this type has no Tauri `AppHandle` by design. `None` on success.
     pub fn start_accumulation(
         &mut self,
         auto_save: bool,
         mut receiver: mpsc::UnboundedReceiver<AudioChunk>,
-    ) {
+    ) -> Option<String> {
         if auto_save {
             info!("Initializing incremental audio saver for recording (auto-save ENABLED)");
         } else {
@@ -147,13 +156,16 @@ impl RecordingSaver {
         }
 
         // Initialize meeting folder and incremental saver ONLY if auto_save is enabled
+        let mut folder_init_error: Option<String> = None;
         if auto_save {
             if let Some(name) = self.meeting_name.clone() {
                 match self.initialize_meeting_folder(&name, true) {
                     Ok(()) => info!("Successfully initialized meeting folder with checkpoints"),
                     Err(e) => {
                         error!("Failed to initialize meeting folder: {}", e);
-                        // Continue anyway - will use fallback flat structure
+                        // Continue anyway - recording proceeds, but it won't be
+                        // recoverable if interrupted. Reported to the caller below.
+                        folder_init_error = Some(e.to_string());
                     }
                 }
             }
@@ -214,6 +226,8 @@ impl RecordingSaver {
         if let Ok(mut is_saving) = self.is_saving.lock() {
             *is_saving = true;
         }
+
+        folder_init_error
     }
 
     /// Initialize meeting folder structure and metadata

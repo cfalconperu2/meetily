@@ -9,7 +9,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use super::devices::AudioDevice;
 
-use super::recording_state::{RecordingState, AudioChunk};
+use super::recording_state::{RecordingState, AudioChunk, AudioLevelUpdate};
 use super::pipeline::AudioPipelineManager;
 use super::stream::AudioStreamManager;
 use super::recording_saver::RecordingSaver;
@@ -191,6 +191,14 @@ pub struct RecordingManager {
     recording_saver: RecordingSaver,
     device_monitor: Option<AudioDeviceMonitor>,
     device_event_receiver: Option<mpsc::UnboundedReceiver<DeviceEvent>>,
+    /// Set when the meeting folder / incremental checkpoint saver failed to
+    /// initialize for the current recording (see `RecordingSaver::start_accumulation`).
+    /// Recording still proceeds; the caller surfaces this to the user.
+    recovery_warning: Option<String>,
+    /// Live mic/system RMS updates from the active pipeline, for the
+    /// recording-time level meter. Taken once by the command layer and
+    /// forwarded to the frontend as Tauri events.
+    level_receiver: Option<mpsc::UnboundedReceiver<AudioLevelUpdate>>,
 }
 
 // SAFETY: RecordingManager contains types that we've marked as Send
@@ -211,6 +219,8 @@ impl RecordingManager {
             recording_saver: RecordingSaver::new(),
             device_monitor: Some(device_monitor),
             device_event_receiver: Some(device_event_receiver),
+            recovery_warning: None,
+            level_receiver: None,
         }
     }
 
@@ -236,6 +246,8 @@ impl RecordingManager {
         // Set up transcription channel
         let (transcription_sender, transcription_receiver) = mpsc::unbounded_channel::<AudioChunk>();
         let (recording_sender, recording_receiver) = mpsc::unbounded_channel::<AudioChunk>();
+        let (level_sender, level_receiver) = mpsc::unbounded_channel::<AudioLevelUpdate>();
+        self.level_receiver = Some(level_receiver);
 
         // Start recording state first
         self.state.start_recording()?;
@@ -271,12 +283,13 @@ impl RecordingManager {
             mic_kind,
             sys_name,
             sys_kind,
+            Some(level_sender),
         ) {
             self.state.stop_recording();
             return Err(RecordingStartError::TranscriptionRuntime(error));
         }
 
-        self.recording_saver.start_accumulation(auto_save, recording_receiver);
+        self.recovery_warning = self.recording_saver.start_accumulation(auto_save, recording_receiver);
         self.recording_saver.set_device_info(
             microphone_device.as_ref().map(|d| d.name.clone()),
             system_device.as_ref().map(|d| d.name.clone())
@@ -566,6 +579,19 @@ impl RecordingManager {
     /// Take ownership of the device event receiver for use by a background processor.
     pub fn take_device_event_receiver(&mut self) -> Option<mpsc::UnboundedReceiver<DeviceEvent>> {
         self.device_event_receiver.take()
+    }
+
+    /// Take the recovery-unavailable warning (if any) set by the most recent
+    /// `start_recording` call, so the caller can surface it to the user.
+    pub fn take_recovery_warning(&mut self) -> Option<String> {
+        self.recovery_warning.take()
+    }
+
+    /// Take ownership of the live audio-level receiver for use by a
+    /// background forwarder (see `spawn_audio_level_forwarder` in
+    /// `recording_commands.rs`).
+    pub fn take_level_receiver(&mut self) -> Option<mpsc::UnboundedReceiver<AudioLevelUpdate>> {
+        self.level_receiver.take()
     }
 
     /// Take the mic stream OUT for hot-swap (Phase 1) so the caller can tear it

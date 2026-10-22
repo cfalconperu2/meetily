@@ -117,23 +117,23 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       // Check for device-related errors
       if (errorMsg.includes('microphone') || errorMsg.includes('mic') || errorMsg.includes('input')) {
         setDeviceError({
-          title: 'Microphone Not Available',
-          message: 'Unable to access your microphone. Please check that:\n• Your microphone is connected\n• The app has microphone permissions\n• No other app is using the microphone'
+          title: 'Micrófono no disponible',
+          message: 'No se pudo acceder al micrófono. Comprueba que:\n• El micrófono esté conectado\n• La aplicación tenga permisos de micrófono\n• Ninguna otra app esté usando el micrófono'
         });
       } else if (errorMsg.includes('system audio') || errorMsg.includes('speaker') || errorMsg.includes('output')) {
         setDeviceError({
-          title: 'System Audio Not Available',
-          message: 'Unable to capture system audio. Please check that:\n• A virtual audio device (like BlackHole) is installed\n• The app has screen recording permissions (macOS)\n• System audio is properly configured'
+          title: 'Audio del sistema no disponible',
+          message: 'No se pudo capturar el audio del sistema. Comprueba que:\n• Haya un dispositivo de audio virtual instalado (p. ej. BlackHole)\n• La app tenga permiso de grabación de pantalla (macOS)\n• El audio del sistema esté configurado correctamente'
         });
       } else if (errorMsg.includes('permission')) {
         setDeviceError({
-          title: 'Permission Required',
-          message: 'Recording permissions are required. Please:\n• Grant microphone access in System Settings\n• Grant screen recording access for system audio (macOS)\n• Restart the app after granting permissions'
+          title: 'Se requieren permisos',
+          message: 'Se necesitan permisos de grabación. Por favor:\n• Concede acceso al micrófono en Configuración del sistema\n• Concede acceso de grabación de pantalla para el audio del sistema (macOS)\n• Reinicia la app después de conceder los permisos'
         });
       } else {
         setDeviceError({
-          title: 'Recording Failed',
-          message: 'Unable to start recording. Please check your audio device settings and try again.'
+          title: 'No se pudo iniciar la grabación',
+          message: 'Revisa la configuración de tus dispositivos de audio e inténtalo de nuevo.'
         });
       }
     }
@@ -338,7 +338,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           {isProcessing && !isParentProcessing ? (
             <div className="flex items-center space-x-2">
               <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-gray-900"></div>
-              <span className="text-sm text-gray-600">Processing recording...</span>
+              <span className="text-sm text-gray-600">Procesando grabación...</span>
             </div>
           ) : (
             <>
@@ -400,7 +400,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                         </button>
                       </TooltipTrigger>
                       <TooltipContent>
-                        <p>Start recording</p>
+                        <p>Iniciar grabación</p>
                       </TooltipContent>
                     </Tooltip>
                   ) : (
@@ -427,13 +427,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                             {isPaused ? <Play size={16} /> : <Pause size={16} />}
                             {(isPausing || isResuming) && (
                               <div className="absolute -top-8 text-gray-600 font-medium text-xs">
-                                {isPausing ? 'Pausing...' : 'Resuming...'}
+                                {isPausing ? 'Pausando...' : 'Reanudando...'}
                               </div>
                             )}
                           </button>
                         </TooltipTrigger>
                         <TooltipContent>
-                          <p>{isPaused ? 'Resume recording' : 'Pause recording'}</p>
+                          <p>{isPaused ? 'Reanudar grabación' : 'Pausar grabación'}</p>
                         </TooltipContent>
                       </Tooltip>
 
@@ -451,13 +451,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                             <Square size={16} />
                             {isStopping && (
                               <div className="absolute -top-8 text-gray-600 font-medium text-xs">
-                                Stopping...
+                                Deteniendo...
                               </div>
                             )}
                           </button>
                         </TooltipTrigger>
                         <TooltipContent>
-                          <p>Stop recording</p>
+                          <p>Detener grabación</p>
                         </TooltipContent>
                       </Tooltip>
                     </>
@@ -485,7 +485,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         {/* Show validation status only */}
         {isValidatingModel && (
           <div className="text-xs text-gray-600 text-center mt-2">
-            Validating speech recognition...
+            Validando el reconocimiento de voz...
           </div>
         )}
 
@@ -496,7 +496,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             <button
               onClick={() => setDeviceError(null)}
               className="absolute right-3 top-3 text-red-600 hover:text-red-800 transition-colors"
-              aria-label="Close alert"
+              aria-label="Cerrar aviso"
             >
               <X className="h-4 w-4" />
             </button>

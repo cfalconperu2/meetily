@@ -35,6 +35,23 @@ pub struct Transcript {
     pub audio_start_time: Option<f64>,
     pub audio_end_time: Option<f64>,
     pub duration: Option<f64>,
+    /// Coarse "mic" vs "system" channel label from the live capture path
+    /// (see `ChannelEnergyTracker` in `audio/pipeline.rs`). `NULL` for
+    /// imported/retranscribed transcripts, which have no separate channels
+    /// to derive it from.
+    pub speaker: Option<String>,
+}
+
+/// Row shape for the history list: meeting metadata plus derived fields that
+/// require joining transcripts/summary_processes (no new columns/migrations).
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct MeetingListItem {
+    pub id: String,
+    pub title: String,
+    pub created_at: DateTimeUtc,
+    pub updated_at: DateTimeUtc,
+    pub duration_seconds: f64,
+    pub summary_status: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

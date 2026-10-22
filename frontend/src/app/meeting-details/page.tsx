@@ -6,6 +6,8 @@ import PageContent from "./page-content";
 import { useRouter, useSearchParams } from "next/navigation";
 import Analytics from "@/lib/analytics";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { toast } from "sonner";
 import { LoaderIcon } from "lucide-react";
 import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
@@ -110,6 +112,10 @@ function MeetingDetailsContent() {
         setShouldAutoGenerate(true);
       } else {
         console.log('⚠️ No model configured and gemma3:1b not found');
+        toast.warning('Configura un modelo de IA para los resúmenes', {
+          description: 'La transcripción ya está guardada. Ve a Configuración > Resumen para elegir un proveedor (Ollama, Claude, Groq, etc.) y poder generar el resumen.',
+          duration: 8000,
+        });
       }
     } catch (error) {
       console.error('❌ Failed to setup auto-generation:', error);
@@ -150,6 +156,43 @@ function MeetingDetailsContent() {
       setError(transcriptError);
     }
   }, [transcriptError]);
+
+  // "Process on finish" recordings arrive here with zero transcripts — the batch
+  // transcription was kicked off in the background right after saving (see
+  // useRecordingStop.ts). Refresh the transcript list the moment it lands so the
+  // transcript panel and the auto-summary effect (which needs transcripts.length
+  // > 0) pick it up without the user having to reload the page.
+  useEffect(() => {
+    if (!meetingId || meetingId === 'intro-call') return;
+
+    let cancelled = false;
+    const unlistenPromises = [
+      listen<{ meeting_id: string; segments_count: number }>('retranscription-complete', (event) => {
+        if (cancelled || event.payload.meeting_id !== meetingId) return;
+        if (event.payload.segments_count > 0) {
+          toast.success('Transcripción lista', {
+            description: `${event.payload.segments_count} fragmentos transcritos.`,
+          });
+        } else {
+          toast.warning('No se detectó voz en la grabación', {
+            description: 'El audio se guardó, pero no se encontró contenido para transcribir.',
+          });
+        }
+        refetch();
+      }),
+      listen<{ meeting_id: string; error: string }>('retranscription-error', (event) => {
+        if (cancelled || event.payload.meeting_id !== meetingId) return;
+        toast.error('Falló la transcripción automática', {
+          description: `${event.payload.error} El audio se conservó; puedes reintentarlo desde "Reprocesar".`,
+        });
+      }),
+    ];
+
+    return () => {
+      cancelled = true;
+      unlistenPromises.forEach(p => p.then(unlisten => unlisten()).catch(() => {}));
+    };
+  }, [meetingId, refetch]);
 
   // Extract fetchMeetingDetails for use in child components (now refetches via hook)
   const fetchMeetingDetails = useCallback(async () => {

@@ -1,4 +1,4 @@
-use crate::summary::templates;
+use crate::summary::templates::{self, Template};
 use serde::{Deserialize, Serialize};
 use tauri::Runtime;
 use tracing::{info, warn};
@@ -14,6 +14,11 @@ pub struct TemplateInfo {
 
     /// Brief description of the template's purpose
     pub description: String,
+
+    /// True when this template lives in the user's custom templates
+    /// directory (editable/deletable). False for bundled/built-in templates
+    /// (read-only in the UI, but can be duplicated into a new custom one).
+    pub is_custom: bool,
 }
 
 /// Detailed template structure for preview/debugging
@@ -49,10 +54,14 @@ pub async fn api_list_templates<R: Runtime>(
 
     let template_infos: Vec<TemplateInfo> = templates
         .into_iter()
-        .map(|(id, name, description)| TemplateInfo {
-            id,
-            name,
-            description,
+        .map(|(id, name, description)| {
+            let is_custom = templates::is_custom_template(&id);
+            TemplateInfo {
+                id,
+                name,
+                description,
+                is_custom,
+            }
         })
         .collect();
 
@@ -95,6 +104,19 @@ pub async fn api_get_template_details<R: Runtime>(
     Ok(details)
 }
 
+/// Gets the full template structure (all section fields), for use as the
+/// starting point when editing or duplicating a template in the template
+/// editor. Unlike `api_get_template_details`, this returns complete section
+/// data (`instruction`/`format`/`item_format`), not just titles.
+#[tauri::command]
+pub async fn api_get_template<R: Runtime>(
+    _app: tauri::AppHandle<R>,
+    template_id: String,
+) -> Result<Template, String> {
+    info!("api_get_template called for template_id: {}", template_id);
+    templates::get_template(&template_id)
+}
+
 /// Validates a custom template JSON string
 ///
 /// Useful for template editor UI or validation before saving custom templates
@@ -121,6 +143,50 @@ pub async fn api_validate_template<R: Runtime>(
             Err(e)
         }
     }
+}
+
+/// Creates or updates a custom template.
+///
+/// Writes to the user's custom templates directory only -- bundled/built-in
+/// templates are never modified. Used for both "create" (new id) and "edit"
+/// (id already exists as a custom template).
+///
+/// # Arguments
+/// * `template_id` - Identifier to save under (sanitized to a safe filename)
+/// * `template` - The template content, validated before writing
+#[tauri::command]
+pub async fn api_save_template<R: Runtime>(
+    _app: tauri::AppHandle<R>,
+    template_id: String,
+    template: Template,
+) -> Result<(), String> {
+    info!("api_save_template called for template_id: {}", template_id);
+
+    templates::save_custom_template(&template_id, &template)?;
+
+    info!("Template '{}' saved successfully", template_id);
+    Ok(())
+}
+
+/// Deletes a custom template.
+///
+/// Only templates that exist as files in the user's custom templates
+/// directory can be deleted; bundled/built-in templates return an error
+/// (duplicate them into a new custom template instead).
+///
+/// # Arguments
+/// * `template_id` - Identifier of the custom template to delete
+#[tauri::command]
+pub async fn api_delete_template<R: Runtime>(
+    _app: tauri::AppHandle<R>,
+    template_id: String,
+) -> Result<(), String> {
+    info!("api_delete_template called for template_id: {}", template_id);
+
+    templates::delete_custom_template(&template_id)?;
+
+    info!("Template '{}' deleted successfully", template_id);
+    Ok(())
 }
 
 #[cfg(test)]
