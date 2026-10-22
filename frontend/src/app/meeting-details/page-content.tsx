@@ -185,6 +185,12 @@ export default function PageContent({
     onAutoGenerateComplete,
   ]);
 
+  const formattedMeetingDate = (() => {
+    if (!meeting.created_at) return null;
+    const parsed = new Date(meeting.created_at);
+    return isNaN(parsed.getTime()) ? null : parsed.toLocaleString();
+  })();
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -192,6 +198,12 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-screen min-w-0 bg-gray-50"
     >
+      <div className="shrink-0 bg-white border-b border-gray-200 px-4 py-2">
+        <h1 className="text-sm font-semibold text-gray-900 truncate">{meeting.title}</h1>
+        {formattedMeetingDate && (
+          <p className="text-xs text-gray-500 mt-0.5">{formattedMeetingDate}</p>
+        )}
+      </div>
       <div className="flex flex-1 min-w-0 overflow-hidden">
         <MeetingDetailsSplitView
           activeTab={activeTab}

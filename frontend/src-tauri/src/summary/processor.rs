@@ -229,7 +229,15 @@ fn build_combine_summary_user_prompt(combined_text: &str) -> String {
 fn build_final_report_system_prompt(
     section_instructions: &str,
     clean_template_markdown: &str,
+    meeting_date: Option<&str>,
 ) -> String {
+    let meeting_date_instruction = match meeting_date {
+        Some(date) => format!(
+            "\n9. The meeting took place on: {date}. If any section asks for a date, use exactly this value — never guess or infer a different date.\n"
+        ),
+        None => String::new(),
+    };
+
     format!(
         r#"You are an expert meeting summarizer. Generate a final meeting report by filling in the provided Markdown template based on the source text.
 
@@ -241,7 +249,7 @@ fn build_final_report_system_prompt(
 5. If a section has no relevant info, write "None noted in this section."
 6. Output **only** the completed Markdown report.
 7. Do not include reasoning, thinking, self-correction, decision strategy, or any meta-commentary sections — output only the completed Markdown report.
-8. If unsure about something, omit it.
+8. If unsure about something, omit it.{meeting_date_instruction}
 
 **SECTION-SPECIFIC INSTRUCTIONS:**
 {section_instructions}
@@ -381,6 +389,7 @@ pub(crate) async fn generate_meeting_summary(
     summary_language: Option<&str>,
     detected_transcript_language: Option<&str>,
     cached_english: Option<&str>,
+    meeting_date: Option<&str>,
 ) -> Result<GeneratedMeetingSummary, String> {
     if cancellation_token.is_some_and(CancellationToken::is_cancelled) {
         return Err("Summary generation was cancelled".to_string());
@@ -494,6 +503,7 @@ pub(crate) async fn generate_meeting_summary(
             let final_system_prompt = build_final_report_system_prompt(
                 &template.to_section_instructions(),
                 &template.to_markdown_structure(),
+                meeting_date,
             );
             let mut final_user_prompt =
                 format!("<transcript_chunks>\n{content_to_summarize}\n</transcript_chunks>\n");
@@ -686,15 +696,21 @@ mod tests {
 
     #[test]
     fn final_report_prompt_forces_english_base_output() {
-        let prompt = build_final_report_system_prompt("Fill the section", "# <Add Title here>");
+        let prompt = build_final_report_system_prompt("Fill the section", "# <Add Title here>", None);
 
         assert!(prompt.contains(ENGLISH_BASE_SUMMARY_INSTRUCTION));
         assert!(prompt.contains("SECTION-SPECIFIC INSTRUCTIONS"));
     }
 
     #[test]
+    fn final_report_prompt_includes_meeting_date_when_provided() {
+        let prompt = build_final_report_system_prompt("Fill", "# Title", Some("2026-09-17"));
+        assert!(prompt.contains("2026-09-17"));
+    }
+
+    #[test]
     fn final_report_prompt_forbids_reasoning_output() {
-        let prompt = build_final_report_system_prompt("Fill", "# Title");
+        let prompt = build_final_report_system_prompt("Fill", "# Title", None);
         assert!(prompt.to_lowercase().contains("no reasoning")
             || prompt.contains("meta-commentary")
             || prompt.contains("self-correction"));
