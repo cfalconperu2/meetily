@@ -1,0 +1,16 @@
+services:
+  remote-processor:
+    build: .
+    ports:
+      - "8899:8899"
+    environment:
+      # Set a real secret before running: `PROCESSOR_API_KEY=$(openssl rand -hex 32) docker compose up`
+      PROCESSOR_API_KEY: ${PROCESSOR_API_KEY:?set PROCESSOR_API_KEY before starting}
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+    volumes:
+      - processor-data:/data
+
+volumes:
+  processor-data:
